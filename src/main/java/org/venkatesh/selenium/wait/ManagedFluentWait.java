@@ -23,9 +23,9 @@ import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.StaleElementReferenceException;
 import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.support.ui.ExpectedCondition;
 import org.openqa.selenium.support.ui.FluentWait;
 
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -41,39 +41,44 @@ public class ManagedFluentWait {
             ImmutableList.<Class<? extends Throwable>>of(StaleElementReferenceException.class,
                     NoSuchElementException.class, NullPointerException.class);
 
-    private final FluentWait<WebDriver> wait;
+    private final FluentWaitProvider provider;
     private final Optional<Duration> implicitTimeout;
-    private final AtomicInteger reentranCheck;
+    private final AtomicInteger reentrantCheck;
 
     @VisibleForTesting
-    ManagedFluentWait(FluentWait<WebDriver> wait, Optional<Duration> implicitTimeout,
-                      AtomicInteger reentranCheck) {
-        this.wait = wait;
+    ManagedFluentWait(FluentWaitProvider provider, Optional<Duration> implicitTimeout,
+                      AtomicInteger reentrantCheck) {
+        this.provider = provider;
         this.implicitTimeout = implicitTimeout;
-        this.reentranCheck = reentranCheck;
+        this.reentrantCheck = reentrantCheck;
     }
 
     /**
      * Simple wrapper around the {@link FluentWait}. Calls {@link FluentWait#until(Function)}
      * disabling implicit timeout when before calling {@code function}. Re-enables the implicit
      * timeout after the {@code function} returns.
+     *
      * @param function determines the output value from the input value
      *
      * @return desired value
      * @throws TimeoutException
      */
     public <T> T until(final Function<WebDriver, T> function) {
-        return wait.until(new ExpectedCondition<T>() {
-            @Override
-            public T apply(WebDriver driver) {
-                disableImplicitWait(driver);
-                try {
-                    return function.apply(driver);
-                } finally {
-                    enableImplicitWait(driver);
-                }
-            }
-        });
+        return provider.get().until(get(function));
+    }
+
+    /**
+     * Simple wrapper around the {@link FluentWait}. Calls {@link FluentWait#until(Function)}
+     * disabling implicit timeout when before calling {@code function}. Re-enables the implicit
+     * timeout after the {@code function} returns.
+     *
+     * @param function determines the output value from the input value
+     *
+     * @return desired value
+     * @throws TimeoutException
+     */
+    public <F, T> T until(F input, final Function<F, T> function) {
+        return provider.getForType(input).until(get(function));
     }
 
     /**
@@ -86,7 +91,7 @@ public class ManagedFluentWait {
      * @throws TimeoutException
      */
     public void until(final Predicate<WebDriver> isTrue) {
-        wait.until(new Predicate<WebDriver>() {
+        provider.get().until(new Predicate<WebDriver>() {
             @Override
             public boolean apply(WebDriver driver) {
                 disableImplicitWait(driver);
@@ -99,14 +104,28 @@ public class ManagedFluentWait {
         });
     }
 
+    private <F, T> Function<F, T> get(final Function<F, T> function) {
+        return new Function<F, T>() {
+            @Override
+            public T apply(@Nullable F input) {
+                disableImplicitWait(provider.getDriver());
+                try {
+                    return function.apply(input);
+                } finally {
+                    enableImplicitWait(provider.getDriver());
+                }
+            }
+        };
+    }
+
     private void disableImplicitWait(WebDriver driver) {
-        if (implicitTimeout.isPresent() &&  reentranCheck.incrementAndGet() == 1) {
+        if (implicitTimeout.isPresent() &&  reentrantCheck.incrementAndGet() == 1) {
             driver.manage().timeouts().implicitlyWait(500, TimeUnit.MILLISECONDS);
         }
     }
 
     private void enableImplicitWait(WebDriver driver) {
-        if (implicitTimeout.isPresent() && reentranCheck.decrementAndGet() == 0) {
+        if (implicitTimeout.isPresent() && reentrantCheck.decrementAndGet() == 0) {
             driver.manage().timeouts().implicitlyWait(
                     implicitTimeout.get().getStandardSeconds(), TimeUnit.SECONDS);
         }
@@ -116,9 +135,8 @@ public class ManagedFluentWait {
      * Returns a {@link ManagedFluentWait} instance which waits for 15 sec and ignores stale
      * reference while waiting for the condition to pass.
      */
-    public static ManagedFluentWait ignoreStaleReference(WebDriver driver) {
-        return onlyExplicitTimeout(driver, Duration.standardSeconds(15),
-                STALE_REFERENCTE_IGNORED_EXCEPTION);
+    public static ManagedFluentWait ignoreStaleReference(WebDriver driver, Duration timeout) {
+        return onlyExplicitTimeout(driver, timeout, STALE_REFERENCTE_IGNORED_EXCEPTION);
     }
 
     public static ManagedFluentWait onlyExplicitTimeout(WebDriver driver, Duration timeout,
@@ -128,9 +146,43 @@ public class ManagedFluentWait {
 
     private static ManagedFluentWait create(WebDriver driver, Duration timeout,
             Optional<Duration> implicitTimeout, List<Class<? extends Throwable>> ignoredException) {
-        return new ManagedFluentWait(new FluentWait<WebDriver>(driver)
-                .pollingEvery(500, TimeUnit.MILLISECONDS)
-                .withTimeout(timeout.getStandardSeconds(), TimeUnit.SECONDS)
-                .ignoreAll(ignoredException), implicitTimeout, new AtomicInteger());
+        FluentWaitProvider provider = new FluentWaitProvider(driver, timeout, ignoredException);
+        return new ManagedFluentWait(provider, implicitTimeout, new AtomicInteger());
+    }
+
+    /**
+     * Provides instances of fluent waits.
+     */
+    static class FluentWaitProvider {
+
+        private final WebDriver driver;
+        private final Duration timeout;
+        private final List<Class<? extends Throwable>> ignoredException;
+
+        FluentWaitProvider(WebDriver driver, Duration timeout,
+                List<Class<? extends Throwable>> ignoredException) {
+            this.driver = driver;
+            this.timeout = timeout;
+            this.ignoredException = ignoredException;
+        }
+
+        public FluentWait<WebDriver> get() {
+            return get(driver);
+        }
+
+        public <T> FluentWait<T> getForType(T type) {
+            return get(type);
+        }
+
+        WebDriver getDriver() {
+            return driver;
+        }
+
+        private <T> FluentWait<T> get(T type) {
+            return new FluentWait<T>(type)
+                    .pollingEvery(500, TimeUnit.MILLISECONDS)
+                    .withTimeout(timeout.getMillis(), TimeUnit.MILLISECONDS)
+                    .ignoreAll(ignoredException);
+        }
     }
 }

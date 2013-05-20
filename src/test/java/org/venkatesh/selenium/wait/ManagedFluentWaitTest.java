@@ -38,22 +38,28 @@ public class ManagedFluentWaitTest {
 
     private IMocksControl control;
     private WebDriver mockedDriver;
+    private ManagedFluentWait.FluentWaitProvider provider;
     private FluentWait<WebDriver> fluentWait;
 
     @Before
     public void setUp() {
         control = EasyMock.createControl();
         mockedDriver = control.createMock(WebDriver.class);
+        provider = control.createMock(ManagedFluentWait.FluentWaitProvider.class);
         fluentWait = new FluentWait<WebDriver>(mockedDriver);
+
+        expect(provider.get()).andReturn(fluentWait);
+        expect(provider.getDriver()).andReturn(mockedDriver).anyTimes();
     }
 
     @Test
     public void untilFunctionDoesNotEnableAndDisableDriverWaitIfAlreadyDisabled() {
         AtomicInteger reentrant = new AtomicInteger(1);
         Optional<Duration> implicitTimeout = Optional.of(Duration.millis(1));
+
         control.replay();
 
-        new ManagedFluentWait(fluentWait, implicitTimeout, reentrant)
+        new ManagedFluentWait(provider, implicitTimeout, reentrant)
                 .until(Functions.<WebDriver>identity());
 
         control.verify();
@@ -67,7 +73,7 @@ public class ManagedFluentWaitTest {
         setUpMock();
         control.replay();
 
-        new ManagedFluentWait(fluentWait, implicitTimeout, reentrant)
+        new ManagedFluentWait(provider, implicitTimeout, reentrant)
                 .until(Functions.<WebDriver>identity());
 
         control.verify();
@@ -77,9 +83,10 @@ public class ManagedFluentWaitTest {
     public void untilPredicateDoesNotEnableAndDisableDriverWaitIfAlreadyDisabled() {
         AtomicInteger reentrant = new AtomicInteger(1);
         Optional<Duration> implicitTimeout = Optional.of(Duration.millis(1));
+
         control.replay();
 
-        new ManagedFluentWait(fluentWait, implicitTimeout, reentrant)
+        new ManagedFluentWait(provider, implicitTimeout, reentrant)
                 .until(Predicates.<WebDriver>alwaysTrue());
 
         control.verify();
@@ -93,7 +100,7 @@ public class ManagedFluentWaitTest {
         setUpMock();
         control.replay();
 
-        new ManagedFluentWait(fluentWait, implicitTimeout, reentrant)
+        new ManagedFluentWait(provider, implicitTimeout, reentrant)
                 .until(Predicates.<WebDriver>alwaysTrue());
 
         control.verify();
